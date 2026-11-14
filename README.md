@@ -1,8 +1,8 @@
 <p align="center"><img src="assets/ponte-256.png" width="128" alt="Ponte"></p>
 
 <p align="center">
-  <a href="https://github.com/vmatteo81/Deskflow/actions/workflows/ci.yml"><img src="https://github.com/vmatteo81/Deskflow/actions/workflows/ci.yml/badge.svg" alt="CI"></a>
-  <a href="https://github.com/vmatteo81/Deskflow/releases/latest"><img src="https://img.shields.io/github/v/release/vmatteo81/Deskflow?label=download" alt="Download"></a>
+  <a href="https://github.com/vmatteo81/Ponte/actions/workflows/ci.yml"><img src="https://github.com/vmatteo81/Ponte/actions/workflows/ci.yml/badge.svg" alt="CI"></a>
+  <a href="https://github.com/vmatteo81/Ponte/releases/latest"><img src="https://img.shields.io/github/v/release/vmatteo81/Ponte?label=download" alt="Download"></a>
 </p>
 
 # Ponte
@@ -28,7 +28,7 @@ C'è un **server** (il PC con mouse e tastiera collegati) e un **client** (il PC
 
 ### 1. Scarica e installa
 
-**[⬇ Scarica l'ultima versione](https://github.com/vmatteo81/Deskflow/releases/latest)**
+**[⬇ Scarica l'ultima versione](https://github.com/vmatteo81/Ponte/releases/latest)**
 
 | Sistema | File | Installazione |
 |---|---|---|
@@ -121,7 +121,7 @@ systemctl --user enable --now ponte
 ### Porte e firewall
 
 - **TCP 24800** per il collegamento, **UDP 24801** per la ricerca in rete.
-- Se la 24800 è occupata (spesso da Synergy, Barrier o Deskflow, che usano la stessa porta) il
+- Se la 24800 è occupata (spesso da Synergy o Barrier, che usano la stessa porta) il
   server passa da solo alla prima libera fino alla **24810**, e la ricerca in rete annuncia quella
   giusta. Il client, se non trova più il server, lo ricerca in rete per IP o per nome e si ricollega.
 - **Firewall:** se serve, la finestra del server mostra **Consenti in rete locale**. Con un solo
@@ -269,3 +269,8 @@ src/
 assets/              logo (SVG sorgente, PNG, ICO)
 packaging/           .desktop, regola udev, servizio systemd utente, manifest Windows
 ```
+
+## Licenza
+
+[0BSD](LICENSE): puoi usare, copiare, modificare e distribuire Ponte per qualsiasi scopo,
+anche commerciale, senza obblighi (nemmeno di citare l'autore). Nessuna garanzia.

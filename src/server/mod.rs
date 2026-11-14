@@ -111,14 +111,14 @@ fn bind_with_fallback(listen: &str) -> Result<TcpListener> {
     for p in port.saturating_add(1)..=last.max(port.saturating_add(10)) {
         if let Ok(l) = TcpListener::bind((host.as_str(), p)) {
             log::warn!(
-                "la porta {port} è occupata da un altro programma (Synergy, Barrier o Deskflow?): uso la {p}"
+                "la porta {port} è occupata da un altro programma (Synergy o Barrier?): uso la {p}"
             );
             return Ok(l);
         }
     }
     anyhow::bail!(
         "porte {port}-{last} tutte occupate: chiudi il programma che le usa \
-         (forse Synergy, Barrier o Deskflow) oppure cambia `listen` nella configurazione"
+         (forse Synergy o Barrier) oppure cambia `listen` nella configurazione"
     )
 }
 

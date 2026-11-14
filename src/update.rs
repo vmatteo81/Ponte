@@ -16,7 +16,7 @@ use anyhow::{bail, Context, Result};
 use serde::Deserialize;
 use sha2::{Digest, Sha256};
 
-const REPO: &str = "vmatteo81/Deskflow";
+const REPO: &str = "vmatteo81/Ponte";
 pub const CURRENT: &str = env!("CARGO_PKG_VERSION");
 const CHECK_EVERY: Duration = Duration::from_secs(6 * 3600);
 
