@@ -2,12 +2,18 @@
 //! bloccano gli eventi) e SendInput per l'iniezione sul client.
 
 use std::cell::RefCell;
+use std::ffi::c_void;
 use std::ptr::null_mut;
+use std::sync::atomic::{AtomicU32, Ordering};
 use std::sync::{Arc, OnceLock};
 
 use anyhow::{bail, Result};
 use windows_sys::Win32::Foundation::{LPARAM, LRESULT, POINT, WPARAM};
 use windows_sys::Win32::System::LibraryLoader::GetModuleHandleW;
+use windows_sys::Win32::System::Power::{
+    PowerRegisterSuspendResumeNotification, DEVICE_NOTIFY_SUBSCRIBE_PARAMETERS,
+};
+use windows_sys::Win32::System::Threading::GetCurrentThreadId;
 use windows_sys::Win32::UI::HiDpi::{
     SetProcessDpiAwarenessContext, DPI_AWARENESS_CONTEXT_PER_MONITOR_AWARE_V2,
 };
@@ -22,12 +28,14 @@ use windows_sys::Win32::UI::Input::KeyboardAndMouse::{
 };
 use windows_sys::Win32::UI::WindowsAndMessaging::{
     CallNextHookEx, DispatchMessageW, GetCursorPos, GetForegroundWindow, GetMessageW,
-    GetSystemMetrics, GetWindowThreadProcessId, SetCursorPos, SetWindowsHookExW, TranslateMessage,
-    HC_ACTION, KBDLLHOOKSTRUCT, LLKHF_EXTENDED, LLKHF_INJECTED, LLMHF_INJECTED,
-    LLMHF_LOWER_IL_INJECTED, MSG, MSLLHOOKSTRUCT, SM_CXVIRTUALSCREEN, SM_CYVIRTUALSCREEN,
-    SM_XVIRTUALSCREEN, SM_YVIRTUALSCREEN, WH_KEYBOARD_LL, WH_MOUSE_LL, WM_KEYDOWN, WM_LBUTTONDOWN,
-    WM_LBUTTONUP, WM_MBUTTONDOWN, WM_MBUTTONUP, WM_MOUSEHWHEEL, WM_MOUSEMOVE, WM_MOUSEWHEEL,
-    WM_RBUTTONDOWN, WM_RBUTTONUP, WM_SYSKEYDOWN, WM_XBUTTONDOWN, WM_XBUTTONUP,
+    GetSystemMetrics, GetWindowThreadProcessId, PostThreadMessageW, SetCursorPos,
+    SetWindowsHookExW, TranslateMessage, UnhookWindowsHookEx, DEVICE_NOTIFY_CALLBACK, HC_ACTION,
+    HHOOK, KBDLLHOOKSTRUCT, LLKHF_EXTENDED, LLKHF_INJECTED, LLMHF_INJECTED,
+    LLMHF_LOWER_IL_INJECTED, MSG, MSLLHOOKSTRUCT, PBT_APMRESUMEAUTOMATIC, PBT_APMRESUMESUSPEND,
+    PBT_APMSUSPEND, SM_CXVIRTUALSCREEN, SM_CYVIRTUALSCREEN, SM_XVIRTUALSCREEN, SM_YVIRTUALSCREEN,
+    WH_KEYBOARD_LL, WH_MOUSE_LL, WM_APP, WM_KEYDOWN, WM_LBUTTONDOWN, WM_LBUTTONUP, WM_MBUTTONDOWN,
+    WM_MBUTTONUP, WM_MOUSEHWHEEL, WM_MOUSEMOVE, WM_MOUSEWHEEL, WM_RBUTTONDOWN, WM_RBUTTONUP,
+    WM_SYSKEYDOWN, WM_XBUTTONDOWN, WM_XBUTTONUP,
 };
 
 use super::{Injector, Rect, ServerPlatform};
@@ -291,6 +299,71 @@ unsafe extern "system" fn keyboard_proc(code: i32, wparam: WPARAM, lparam: LPARA
     CallNextHookEx(null_mut(), code, wparam, lparam)
 }
 
+/// Messaggio al thread degli hook: il PC si è risvegliato.
+const WM_PONTE_RESUMED: u32 = WM_APP + 1;
+static HOOK_THREAD: AtomicU32 = AtomicU32::new(0);
+
+unsafe fn install_hooks() -> Option<(HHOOK, HHOOK)> {
+    let module = GetModuleHandleW(std::ptr::null());
+    let mh = SetWindowsHookExW(WH_MOUSE_LL, Some(mouse_proc), module, 0);
+    let kh = SetWindowsHookExW(WH_KEYBOARD_LL, Some(keyboard_proc), module, 0);
+    if mh.is_null() || kh.is_null() {
+        if !mh.is_null() {
+            UnhookWindowsHookEx(mh);
+        }
+        if !kh.is_null() {
+            UnhookWindowsHookEx(kh);
+        }
+        return None;
+    }
+    Some((mh, kh))
+}
+
+/// Sospensione e risveglio del PC. Prima di dormire il controllo torna al
+/// server (il client riceve `Leave`); al risveglio si riparte in locale.
+unsafe extern "system" fn power_proc(_ctx: *const c_void, kind: u32, _s: *const c_void) -> u32 {
+    match kind {
+        PBT_APMSUSPEND => {
+            if let Some(e) = engine() {
+                e.suspend();
+                // Lascia allo scrittore il tempo di spedire `Leave` prima che
+                // la scheda di rete si spenga.
+                std::thread::sleep(std::time::Duration::from_millis(200));
+            }
+        }
+        PBT_APMRESUMEAUTOMATIC | PBT_APMRESUMESUSPEND => {
+            log::info!("risveglio del server");
+            if let Some(e) = engine() {
+                e.resume();
+            }
+            let tid = HOOK_THREAD.load(Ordering::Relaxed);
+            if tid != 0 {
+                PostThreadMessageW(tid, WM_PONTE_RESUMED, 0, 0);
+            }
+        }
+        _ => {}
+    }
+    0
+}
+
+fn register_power_events() {
+    let params = Box::leak(Box::new(DEVICE_NOTIFY_SUBSCRIBE_PARAMETERS {
+        Callback: Some(power_proc),
+        Context: null_mut(),
+    }));
+    let mut handle = null_mut();
+    let err = unsafe {
+        PowerRegisterSuspendResumeNotification(
+            DEVICE_NOTIFY_CALLBACK,
+            params as *mut DEVICE_NOTIFY_SUBSCRIBE_PARAMETERS as _,
+            &mut handle,
+        )
+    };
+    if err != 0 {
+        log::warn!("notifiche di sospensione non disponibili (errore {err})");
+    }
+}
+
 pub fn start_capture(slot: Slot) -> Result<Arc<dyn ServerPlatform>> {
     if SLOT.set(slot).is_err() {
         bail!("cattura già avviata");
@@ -299,16 +372,27 @@ pub fn start_capture(slot: Slot) -> Result<Arc<dyn ServerPlatform>> {
     std::thread::Builder::new()
         .name("ponte-hooks".into())
         .spawn(move || unsafe {
-            let module = GetModuleHandleW(std::ptr::null());
-            let mh = SetWindowsHookExW(WH_MOUSE_LL, Some(mouse_proc), module, 0);
-            let kh = SetWindowsHookExW(WH_KEYBOARD_LL, Some(keyboard_proc), module, 0);
-            if mh.is_null() || kh.is_null() {
+            let Some(mut hooks) = install_hooks() else {
                 let _ = tx.send(Err("SetWindowsHookEx fallita".into()));
                 return;
-            }
+            };
+            HOOK_THREAD.store(GetCurrentThreadId(), Ordering::Relaxed);
             let _ = tx.send(Ok(()));
             let mut msg: MSG = std::mem::zeroed();
             while GetMessageW(&mut msg, null_mut(), 0, 0) > 0 {
+                if msg.hwnd.is_null() && msg.message == WM_PONTE_RESUMED {
+                    // Windows può aver tolto gli hook durante la sospensione
+                    // senza avvisare: si reinstallano, e i tasti "premuti"
+                    // prima di dormire si dimenticano.
+                    DOWN.with(|d| d.borrow_mut().clear());
+                    UnhookWindowsHookEx(hooks.0);
+                    UnhookWindowsHookEx(hooks.1);
+                    match install_hooks() {
+                        Some(h) => hooks = h,
+                        None => log::error!("risveglio: impossibile reinstallare gli hook"),
+                    }
+                    continue;
+                }
                 TranslateMessage(&msg);
                 DispatchMessageW(&msg);
             }
@@ -318,6 +402,7 @@ pub fn start_capture(slot: Slot) -> Result<Arc<dyn ServerPlatform>> {
         Ok(Err(e)) => bail!(e),
         Err(_) => bail!("thread degli hook terminato"),
     }
+    register_power_events();
     Ok(Arc::new(WinPlatform))
 }
 

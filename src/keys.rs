@@ -48,6 +48,7 @@ pub const KEY_LEFTSHIFT: u16 = 42;
 pub const KEY_RIGHTSHIFT: u16 = 54;
 pub const KEY_LEFTALT: u16 = 56;
 pub const KEY_NUMLOCK: u16 = 69;
+pub const KEY_SYSRQ: u16 = 99;
 #[cfg(test)]
 pub const KEY_SCROLLLOCK: u16 = 70;
 pub const KEY_RIGHTCTRL: u16 = 97;
@@ -223,6 +224,7 @@ pub enum WinKey {
 const VK_PAUSE: u32 = 0x13;
 const VK_NUMLOCK: u32 = 0x90;
 const VK_RSHIFT: u32 = 0xA1;
+const VK_SNAPSHOT: u32 = 0x2C;
 
 /// Scancode con prefisso E0 → keycode evdev.
 const EXTENDED: &[(u16, u16)] = &[
@@ -281,6 +283,11 @@ pub fn win_to_evdev(vk: u32, scan: u32, extended: bool) -> Option<u16> {
     // questo caso veniva scartato e Shift destro + tasto arrivava senza Shift.
     if vk == VK_RSHIFT {
         return Some(KEY_RIGHTSHIFT);
+    }
+    // Con Alt premuto Stamp arriva come SysRq (scancode 0x54, non esteso):
+    // senza questo caso Alt+Stamp restava sempre sul server.
+    if vk == VK_SNAPSHOT {
+        return Some(KEY_SYSRQ);
     }
     let scan = scan as u16;
     if extended {
@@ -395,5 +402,8 @@ mod tests {
         assert_eq!(win_to_evdev(0xA1, 0x36, false), Some(KEY_RIGHTSHIFT));
         // Shift "finto" che Windows genera col tastierino: va ignorato.
         assert_eq!(win_to_evdev(0xA0, 0x2A, true), None);
+        // Stamp: E0 37 da solo, 54 con Alt premuto; è sempre lo stesso tasto.
+        assert_eq!(win_to_evdev(0x2C, 0x37, true), Some(KEY_SYSRQ));
+        assert_eq!(win_to_evdev(0x2C, 0x54, false), Some(KEY_SYSRQ));
     }
 }

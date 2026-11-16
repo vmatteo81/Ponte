@@ -459,6 +459,32 @@ impl Engine {
         }
     }
 
+    /// Il PC del server sta per andare in sospensione: il controllo torna qui
+    /// e il client riceve subito `Leave` (dopo, la rete non c'è più).
+    #[cfg_attr(not(windows), allow(dead_code))]
+    pub fn suspend(&self) {
+        let mut g = self.lock();
+        let s = &mut *g;
+        if s.remote {
+            log::info!("sospensione del server: il controllo torna al server");
+            self.go_local(s, Exit::Hotkey);
+        }
+    }
+
+    /// Il PC del server si è risvegliato: si riparte in locale e si
+    /// dimenticano i tasti rimasti "premuti" (i rilasci si sono persi).
+    #[cfg_attr(not(windows), allow(dead_code))]
+    pub fn resume(&self) {
+        let mut g = self.lock();
+        let s = &mut *g;
+        self.go_local(s, Exit::Hotkey);
+        s.pressed.clear();
+        s.local_keys.clear();
+        s.swallow_up.clear();
+        s.local_buttons = 0;
+        s.cooldown_until = None;
+    }
+
     pub fn client_left(&self, id: u64, along: u16) {
         let mut g = self.lock();
         let s = &mut *g;
@@ -744,6 +770,43 @@ mod tests {
         e.detach(1);
         assert!(!e.is_remote());
         assert_eq!(fake.captures.lock().unwrap().last(), Some(&(false, false)));
+    }
+
+    #[test]
+    fn suspend_while_remote_returns_control_and_tells_client() {
+        let (fake, e, rx) = setup();
+        key(&e, 70, true);
+        key(&e, 70, false);
+        key(&e, 30, true);
+        drain(&rx);
+        e.suspend();
+        assert!(!e.is_remote());
+        assert_eq!(fake.captures.lock().unwrap().last(), Some(&(false, false)));
+        assert_eq!(
+            drain(&rx),
+            vec![
+                Msg::Key {
+                    code: 30,
+                    down: false
+                },
+                Msg::Leave { along: 0 }
+            ]
+        );
+        // In locale non succede nulla.
+        e.suspend();
+        assert!(drain(&rx).is_empty());
+    }
+
+    #[test]
+    fn resume_forgets_keys_lost_during_sleep() {
+        let (_f, e, rx) = setup();
+        key(&e, 29, true); // Ctrl premuto prima della sospensione, rilascio perso
+        e.suspend();
+        e.resume();
+        // Senza il Ctrl "fantasma" la hotkey funziona subito.
+        assert_eq!(key(&e, 70, true), Verdict::Swallow);
+        assert!(e.is_remote());
+        assert!(matches!(drain(&rx).last(), Some(Msg::Enter { .. })));
     }
 
     #[test]
